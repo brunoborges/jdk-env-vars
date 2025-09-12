@@ -153,12 +153,18 @@ EOF
   fi
 }
 
-# Decide run command (array) depending on version
-if [[ -n $JAVA_MAJOR && $JAVA_MAJOR -lt 11 ]]; then
-  RUN_CMD=(java -cp "$WORKDIR" Test)
-else
-  RUN_CMD=(java "$WORKDIR/Test.java")
-fi
+RUN_CMD=() # populated after compilation
+
+set_run_cmd() {
+  if [[ -z "${WORKDIR:-}" ]]; then
+    say_err "Internal error: WORKDIR not set before set_run_cmd"; exit 1
+  fi
+  if [[ -n $JAVA_MAJOR && $JAVA_MAJOR -lt 11 ]]; then
+    RUN_CMD=(java -cp "$WORKDIR" Test)
+  else
+    RUN_CMD=(java "$WORKDIR/Test.java")
+  fi
+}
 
 # Runs java with two env vars set: A and B.
 # Each sets -Dfoo to a unique tag so we can see which one wins.
@@ -225,6 +231,7 @@ main() {
   require_java
   create_temp_dir
   compile_test_class
+  set_run_cmd
 
   hr; say "Testing property key: ${BOLD}${PROPERTY_KEY}${RESET}"; hr
   $QUIET || say "Pairwise tests (two variables at a time):"
