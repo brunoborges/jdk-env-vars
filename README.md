@@ -27,6 +27,7 @@
 - [JSON Schema (Informal)](#json-schema-informal)
 - [Troubleshooting](#troubleshooting)
 - [Notes & Caveats](#notes--caveats)
+ - [Official Documentation & References](#official-documentation--references)
 - [Development](#development)
 - [License](#license)
 
@@ -199,6 +200,23 @@ Example (formatted for readability):
 - Uses source-file mode (`java Test.java`) to avoid compiled artifacts.
 - Behavior might differ across JDK vendors / versions (< 21 warns).
 - Not an official specification; purely observational.
+
+## Official Documentation & References
+
+| Variable | Official Docs | Support Status |
+|----------|---------------|----------------|
+| `JDK_JAVA_OPTIONS` | [java launcher man page (JDK 21)](https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html#using-the-jdk_java_options-launcher-environment-variable) | Documented & Supported |
+| `JAVA_TOOL_OPTIONS` | [Troubleshooting Guide: Environment Variables](https://docs.oracle.com/en/java/javase/21/troubleshoot/environment-variables-and-system-properties.html#GUID-A91E7E21-2E91-48C4-89A4-836A7C0EE93B) | Documented & Supported |
+| `_JAVA_OPTIONS` | (Undocumented) | Undocumented & Unsupported (but widely used) |
+
+Additional context (OpenJDK issue [JDK-8170832](https://bugs.openjdk.org/browse/JDK-8170832)) clarifies:
+
+> `_JAVA_OPTIONS` and `JAVA_TOOL_OPTIONS` environment variables are interpreted by the **VM**, not the launcher, hence no `@`-files or launcher-only options. The former is **undocumented and unsupported** but widely used; the latter is documented and supported.
+
+Implications:
+- `_JAVA_OPTIONS` may continue working in practice, but reliance on it carries risk because semantics or availability could change without notice.
+- Prefer `JDK_JAVA_OPTIONS` (newer, explicit) or `JAVA_TOOL_OPTIONS` (documented) for portable automation.
+- This project treats all three empirically; detection now differentiates unsupported vars per JDK.
 
 ## Development
 
