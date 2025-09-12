@@ -59,6 +59,14 @@ say() { $QUIET && return 0; printf "%s\n" "$*"; }
 say_err() { printf "%s\n" "$*" >&2; }
 hr() { $QUIET && return 0; printf "%s\n" "----------------------------------------"; }
 
+log_note() { # route notes/warnings; if JSON mode keep stdout clean
+  if $OUTPUT_JSON; then
+    printf '%s\n' "$*" >&2
+  else
+    say "$*"
+  fi
+}
+
 usage() {
   cat <<EOF
 ${SCRIPT_NAME} - Determine precedence among JVM option env vars
@@ -120,9 +128,9 @@ require_java() {
     JAVA_MAJOR="${BASH_REMATCH[1]}"
   fi
   if [[ -z $JAVA_MAJOR ]]; then
-    say "${YELLOW}Warning:${RESET} Unable to determine Java major version from: $out"
+    log_note "${YELLOW}Warning:${RESET} Unable to determine Java major version from: $out"
   elif [[ $JAVA_MAJOR -lt 21 ]]; then
-    say "${YELLOW}Note:${RESET} Detected Java major version $JAVA_MAJOR (<21). Behavior / precedence could differ from newer specs."
+    log_note "${YELLOW}Note:${RESET} Detected Java major version $JAVA_MAJOR (<21). Behavior / precedence could differ from newer specs."
   fi
 }
 
