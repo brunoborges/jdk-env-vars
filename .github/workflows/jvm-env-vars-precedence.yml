@@ -1,0 +1,103 @@
+name: JVM Env Var Precedence
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  matrix-run:
+    name: Run script (JDK ${{ matrix.java }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java: [8, 11, 17, 21]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+
+      - name: Make script executable
+        run: chmod +x ./check-jvm-env-vars.sh
+
+      - name: Run script (JSON)
+        run: |
+          ./check-jvm-env-vars.sh -p ciProp -j > result.json
+          echo "Result JSON:" && cat result.json
+
+      - name: Upload JSON artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: precedence-json-jdk-${{ matrix.java }}
+          path: result.json
+
+  aggregate:
+    name: Aggregate Report
+    needs: [matrix-run]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all JSON artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: artifacts
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Generate aggregated markdown report
+        run: |
+          echo "# JVM Option Env Var Precedence Report" > REPORT.md
+          echo "Generated: $(date -u '+%Y-%m-%d %H:%M UTC')" >> REPORT.md
+          echo >> REPORT.md
+          echo "| JDK | Order (highest→lowest) | Status |" >> REPORT.md
+          echo "|-----|------------------------|--------|" >> REPORT.md
+          for f in artifacts/precedence-json-jdk-*/result.json; do
+            jdk=$(echo "$f" | sed -E 's#.*jdk-([0-9]+)/result.json#\1#')
+            order=$(jq -r '[.order[]?] | join(" > ")' "$f")
+            if [ -z "$order" ] || [ "$order" = "" ]; then
+              order="(inconclusive)"
+            fi
+            status=$(jq -r '.status' "$f")
+            echo "| ${jdk} | ${order} | ${status} |" >> REPORT.md
+          done
+          echo >> REPORT.md
+          echo "## Raw JSON Artifacts" >> REPORT.md
+          for f in artifacts/precedence-json-jdk-*/result.json; do
+            jdk=$(echo "$f" | sed -E 's#.*jdk-([0-9]+)/result.json#\1#')
+            echo "### JDK ${jdk}" >> REPORT.md
+            echo '\n```json' >> REPORT.md
+            cat "$f" >> REPORT.md
+            echo '```' >> REPORT.md
+            echo >> REPORT.md
+          done
+
+      - name: Upload aggregated report artifact
+        uses: actions/upload-artifact@v3
+        with:
+            name: aggregated-report
+            path: REPORT.md
+
+      - name: Commit & push REPORT.md (main branch only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          # Fetch existing report if present
+          cp REPORT.md ci-REPORT.md
+          git config user.name "github-actions"
+          git config user.email "actions@users.noreply.github.com"
+          if [ -f REPORT.md ]; then
+            :
+          fi
+          git add REPORT.md
+          git diff --cached --quiet || git commit -m "ci: update precedence REPORT.md"
+          git push || echo "Non-fast-forward push skipped (likely PR context)"

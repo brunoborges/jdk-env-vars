@@ -1,1 +1,218 @@
-# jdk-env-vars
+# JVM Option Environment Variables Precedence
+
+> Determine the effective precedence among `_JAVA_OPTIONS`, `JAVA_TOOL_OPTIONS`, and `JDK_JAVA_OPTIONS` for your installed JDK.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+<!-- Badges (add if desired)
+[![CI](https://img.shields.io/badge/ci-pending-lightgray)](#)
+-->
+
+`check-jvm-env-vars.sh` performs controlled JVM launches to empirically infer the precedence ordering when multiple JVM option environment variables set the same `-D<key>=...` system property.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Why](#why)
+- [How it Works](#how-it-works)
+- [Prerequisites](#prerequisites)
+- [Installation / Getting the Script](#installation--getting-the-script)
+- [Quick Start](#quick-start)
+- [Usage](#usage)
+  - [Options](#options)
+  - [Examples](#examples)
+- [Output Interpretation](#output-interpretation)
+  - [Human Output](#human-output)
+  - [JSON Output](#json-output)
+- [JSON Schema (Informal)](#json-schema-informal)
+- [Troubleshooting](#troubleshooting)
+- [Notes & Caveats](#notes--caveats)
+- [Development](#development)
+- [License](#license)
+
+## Overview
+
+The script sets a unique system property via each env var in isolation and in pairwise combinations, records which value the JVM reports, and derives a precedence order. A final sanity run sets all three simultaneously to ensure the predicted winner matches reality.
+
+## Why
+
+- Clarify which env var is overriding expected JVM options in complex build or container environments.
+- Document vendor / version differences empirically.
+- Automate a check in CI to detect unexpected changes after a JDK upgrade.
+
+## How it Works
+
+1. Generates a random (or user-specified) property key (default: `foo<random>`).
+2. Compiles an inline Java source (source-file mode) that prints `key=value`.
+3. Runs three pairwise comparisons:
+   - `_JAVA_OPTIONS` vs `JAVA_TOOL_OPTIONS`
+   - `_JAVA_OPTIONS` vs `JDK_JAVA_OPTIONS`
+   - `JAVA_TOOL_OPTIONS` vs `JDK_JAVA_OPTIONS`
+4. Converts winners into directed edges (e.g., `_JAVA_OPTIONS>JAVA_TOOL_OPTIONS`).
+5. Performs a lightweight ranking (count wins; detect cycles or insufficient data).
+6. (Optional) Sanity run with all three set; compare observed winner with predicted top.
+7. Emits human-readable or JSON output.
+
+## Prerequisites
+
+- Java (`java`) available on PATH. JDK 21+ recommended (script warns if < 21).
+- Bash 4+. macOS ships an older Bash; install a recent one if needed:
+
+```bash
+brew install bash
+/opt/homebrew/bin/bash check-jvm-env-vars.sh
+```
+
+## Installation / Getting the Script
+
+Clone or copy the single script:
+
+```bash
+git clone https://github.com/brunoborges/jdk-env-vars.git
+cd jdk-env-vars
+chmod +x check-jvm-env-vars.sh
+```
+
+Or download just the script (example with curl):
+
+```bash
+curl -O https://raw.githubusercontent.com/brunoborges/jdk-env-vars/main/check-jvm-env-vars.sh
+chmod +x check-jvm-env-vars.sh
+```
+
+## Quick Start
+
+```bash
+./check-jvm-env-vars.sh
+```
+
+## Usage
+
+```bash
+./check-jvm-env-vars.sh [options]
+```
+
+### Options
+
+| Option | Argument | Description |
+|--------|----------|-------------|
+| `-p` | `<property>` | System property key to test (default: random) |
+| `-j` | — | Emit JSON output |
+| `-q` | — | Quiet (suppress progress, JSON still printed with `-j`) |
+| `-k` | — | Keep temporary work directory |
+| `--no-color` | — | Disable ANSI colors |
+| `--no-sanity` | — | Skip all-three sanity check |
+| `-h`, `--help` | — | Show help and exit |
+
+### Examples
+
+Default run (human output):
+```bash
+./check-jvm-env-vars.sh
+```
+
+Specific property and JSON (redirect to file):
+```bash
+./check-jvm-env-vars.sh -p myKey -j > result.json
+```
+
+Quiet + keep temp dir (for debugging):
+```bash
+./check-jvm-env-vars.sh -q -k
+```
+
+Disable color (useful for logs):
+```bash
+./check-jvm-env-vars.sh --no-color
+```
+
+Skip sanity check (faster, but less validation):
+```bash
+./check-jvm-env-vars.sh --no-sanity
+```
+
+## Output Interpretation
+
+### Human Output
+
+Key sections:
+- Pairwise results (who beat whom)
+- Inferred edges
+- Final precedence chain (if conclusive) in the form `A > B > C`
+- Sanity check output (raw JVM output + match / mismatch message)
+
+If you see:
+- `Inconclusive`: cycle or insufficient pairwise data.
+- `WARNING` mismatch: the all-three run did not validate the predicted order.
+
+### JSON Output
+
+Example (formatted for readability):
+```json
+{
+  "property": "foo12345",
+  "pairwise": {
+    "_JAVA_OPTIONS_vs_JAVA_TOOL_OPTIONS": "_JAVA_OPTIONS",
+    "_JAVA_OPTIONS_vs_JDK_JAVA_OPTIONS": "_JAVA_OPTIONS",
+    "JAVA_TOOL_OPTIONS_vs_JDK_JAVA_OPTIONS": "JAVA_TOOL_OPTIONS"
+  },
+  "edges": [
+    "_JAVA_OPTIONS>JAVA_TOOL_OPTIONS",
+    "_JAVA_OPTIONS>JDK_JAVA_OPTIONS",
+    "JAVA_TOOL_OPTIONS>JDK_JAVA_OPTIONS"
+  ],
+  "order": [
+    "_JAVA_OPTIONS",
+    "JAVA_TOOL_OPTIONS",
+    "JDK_JAVA_OPTIONS"
+  ],
+  "sanity": {
+    "raw": "...raw JVM stdout/stderr...",
+    "value": "from-_JAVA_OPTIONS"
+  },
+  "status": "ok"
+}
+```
+
+## JSON Schema (Informal)
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `property` | string | Tested property key |
+| `pairwise` | object | Keys: three pairwise labels -> winner env var or `unknown` |
+| `edges` | array<string> | Directed edges `A>B` or `unknown` placeholders |
+| `order` | array<string> \| null | Highest precedence first; `null` if inconclusive |
+| `sanity` | object \| null | `raw` (string) and `value` (string or empty) |
+| `status` | string | `ok`, `inconclusive`, or `mismatch` |
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `ERROR: java not found in PATH` | No JDK on PATH | Install JDK; ensure `java -version` works |
+| Bash errors about associative arrays | Old macOS Bash | Use Homebrew Bash (`/opt/homebrew/bin/bash`) |
+| `inconclusive` result | Cycle or insufficient data | Re-run; ensure no external tooling mutates env vars; try another JDK version |
+| `mismatch` status | Sanity run disagrees with inferred order | Investigate vendor-specific behavior; file an issue |
+
+## Notes & Caveats
+
+- Uses source-file mode (`java Test.java`) to avoid compiled artifacts.
+- Behavior might differ across JDK vendors / versions (< 21 warns).
+- Not an official specification; purely observational.
+
+## Development
+
+Contributions welcome:
+1. Fork & clone
+2. Create a feature branch
+3. Make changes (add tests / validation logic if expanding scope)
+4. Submit a PR with rationale and sample output
+
+Ideas / Future Enhancements:
+- Add CI matrix across multiple JDK versions/vendors
+- Option to test additional JVM flags precedence beyond `-D`
+- Emit machine-readable provenance (JDK vendor/version digest)
+
+## License
+
+Released under the MIT License. See the [`LICENSE`](LICENSE) file for details.
