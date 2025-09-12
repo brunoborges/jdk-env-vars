@@ -17,10 +17,10 @@ jobs:
         java: [8, 11, 17, 21]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up JDK ${{ matrix.java }}
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: ${{ matrix.java }}
@@ -34,7 +34,7 @@ jobs:
           echo "Result JSON:" && cat result.json
 
       - name: Upload JSON artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: precedence-json-jdk-${{ matrix.java }}
           path: result.json
