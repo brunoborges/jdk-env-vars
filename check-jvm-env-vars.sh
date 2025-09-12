@@ -45,6 +45,8 @@ COLOR=true
 SANITY=true
 
 ENV_VARS=( _JAVA_OPTIONS JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS )
+SUPPORTED_VARS=()
+UNSUPPORTED_VARS=()
 
 # ---------- color handling ----------
 if [[ ! -t 1 ]]; then COLOR=false; fi
@@ -189,26 +191,44 @@ set_run_cmd() {
   fi
 }
 
+# Detect which env vars are actually honored for -D injection by this JVM.
+# Strategy: run with only that env var setting -D<key>=from-<VAR>-probe and see if property appears.
+detect_supported_env_vars() {
+  SUPPORTED_VARS=()
+  UNSUPPORTED_VARS=()
+  local var tag out val
+  for var in "${ENV_VARS[@]}"; do
+    tag="from-${var}-probe"
+    out="$(env "${var}=-D${PROPERTY_KEY}=${tag}" "${RUN_CMD[@]}" 2>&1 || true)"
+    val="$(printf '%s\n' "$out" | awk -F'=' -v k="${PROPERTY_KEY}" '$0 ~ "^"k"=" {print $2; exit}')"
+    if [[ "$val" == "$tag" ]]; then
+      SUPPORTED_VARS+=("$var")
+    else
+      UNSUPPORTED_VARS+=("$var")
+      log_note "${YELLOW}Note:${RESET} JVM ignored ${var}; marking unsupported for this run."
+    fi
+  done
+  if [[ ${#SUPPORTED_VARS[@]} -lt 2 ]]; then
+    log_note "${YELLOW}Warning:${RESET} Fewer than two supported JVM option environment variables detected; ordering may be inconclusive."
+  fi
+}
+
 # Runs java with two env vars set: A and B.
 # Each sets -Dfoo to a unique tag so we can see which one wins.
 # Prints the winner name and returns 0.
 # Usage: test_pair _JAVA_OPTIONS JAVA_TOOL_OPTIONS
 test_pair() {
-  local A="$1" B="$2"
-  local aval="from-${A}" bval="from-${B}"
-  local out val
-
-  out="$(env \
-      "${A}=-D${PROPERTY_KEY}=${aval}" \
-      "${B}=-D${PROPERTY_KEY}=${bval}" \
-      "${RUN_CMD[@]}" 2>&1 || true)"
-
+  local A="$1" B="$2" s
+  for s in "$A" "$B"; do
+    if [[ " ${UNSUPPORTED_VARS[*]} " == *" $s "* ]]; then
+      echo "unsupported"; return 0
+    fi
+  done
+  local aval="from-${A}" bval="from-${B}" out val
+  out="$(env "${A}=-D${PROPERTY_KEY}=${aval}" "${B}=-D${PROPERTY_KEY}=${bval}" "${RUN_CMD[@]}" 2>&1 || true)"
   val="$(printf '%s\n' "$out" | awk -F'=' -v k="${PROPERTY_KEY}" '$0 ~ "^"k"=" {print $2; exit}')"
-
   if [[ -z "${val:-}" ]]; then
-    say "${YELLOW}WARN:${RESET} Could not detect winner for pair ${A} vs ${B}.";
-    $QUIET || printf '%s\n' "$out"
-    echo "unknown"; return 0
+    say "${YELLOW}WARN:${RESET} Could not detect winner for pair ${A} vs ${B}."; $QUIET || printf '%s\n' "$out"; echo "unknown"; return 0
   fi
   if [[ "$val" == "$aval" ]]; then echo "$A"; return 0; fi
   if [[ "$val" == "$bval" ]]; then echo "$B"; return 0; fi
@@ -218,34 +238,25 @@ test_pair() {
 # Topological sort for 3 items using pairwise wins.
 # Input: three lines like "A>B"
 # Output: final order or "inconclusive"
-rank_three() {
+rank_general() {
   local edges=("$@")
-  local -A wins
-  for v in "${ENV_VARS[@]}"; do wins[$v]=0; done
-
+  local vars=("${SUPPORTED_VARS[@]}")
+  local -A wins; for v in "${vars[@]}"; do wins[$v]=0; done
   local known_edges=()
   for e in "${edges[@]}"; do
-    [[ $e == unknown ]] && continue
-    known_edges+=( "$e" )
-    local L="${e%%>*}" R="${e##*>}"
-    (( wins[$L]++ )) || true
+    [[ $e == unknown || $e == unsupported ]] && continue
+    known_edges+=("$e")
+    local L="${e%%>*}" R="${e##*>}"; (( wins[$L]++ )) || true
   done
-
-  # If we have fewer than 2 known edges we cannot fully rank reliably
-  local order
-  order=$(for v in "${ENV_VARS[@]}"; do printf '%s %d\n' "$v" "${wins[$v]}"; done | sort -k2,2nr | awk '{print $1}')
-
-  # Detect cycle: for 3 nodes a cycle would mean each wins exactly once
-  local w1=${wins[_JAVA_OPTIONS]} w2=${wins[JAVA_TOOL_OPTIONS]} w3=${wins[JDK_JAVA_OPTIONS]}
-  local cycle=false
-  if [[ $w1 -eq 1 && $w2 -eq 1 && $w3 -eq 1 ]]; then cycle=true; fi
-
-  # Incomplete if <3 comparisons succeeded or cycle detected
-  if $cycle || [[ ${#known_edges[@]} -lt 2 ]]; then
-    echo "inconclusive"
-  else
-    printf '%s\n' $order
+  local n=${#vars[@]}
+  if [[ $n -lt 2 ]]; then echo "inconclusive"; return; fi
+  # Need at least n-1 edges to form a full order
+  if [[ ${#known_edges[@]} -lt $((n-1)) ]]; then echo "inconclusive"; return; fi
+  if [[ $n -eq 3 ]]; then
+    local w1=${wins[_JAVA_OPTIONS]:-0} w2=${wins[JAVA_TOOL_OPTIONS]:-0} w3=${wins[JDK_JAVA_OPTIONS]:-0}
+    if [[ $w1 -eq 1 && $w2 -eq 1 && $w3 -eq 1 ]]; then echo "inconclusive"; return; fi
   fi
+  for v in "${vars[@]}"; do printf '%s %d\n' "$v" "${wins[$v]}"; done | sort -k2,2nr | awk '{print $1}'
 }
 
 # ---------- main ----------
@@ -257,6 +268,9 @@ main() {
   set_run_cmd
 
   hr; say "Testing property key: ${BOLD}${PROPERTY_KEY}${RESET}"; hr
+  detect_supported_env_vars
+  $QUIET || say "Supported variables: ${SUPPORTED_VARS[*]:-(none)}"
+  $QUIET || { [[ ${#UNSUPPORTED_VARS[@]} -gt 0 ]] && say "Unsupported variables: ${UNSUPPORTED_VARS[*]}" || true; }
   $QUIET || say "Pairwise tests (two variables at a time):"
 
   w1="$(test_pair _JAVA_OPTIONS JAVA_TOOL_OPTIONS)"; $QUIET || say "_JAVA_OPTIONS vs JAVA_TOOL_OPTIONS -> winner: ${w1}"
@@ -264,19 +278,20 @@ main() {
   w3="$(test_pair JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS)"; $QUIET || say "JAVA_TOOL_OPTIONS vs JDK_JAVA_OPTIONS -> winner: ${w3}"
 
   edges=()
-  if [[ "$w1" == "_JAVA_OPTIONS" ]]; then edges+=("_JAVA_OPTIONS>JAVA_TOOL_OPTIONS")
-  elif [[ "$w1" == "JAVA_TOOL_OPTIONS" ]]; then edges+=("JAVA_TOOL_OPTIONS>_JAVA_OPTIONS")
-  else edges+=("unknown"); fi
+  # Edge helper
+  build_edge() {
+    local A="$1" B="$2" W="$3"
+    if [[ "$W" == unsupported ]]; then edges+=(unsupported); return; fi
+    if [[ "$W" == unknown ]]; then edges+=(unknown); return; fi
+    if [[ "$W" == "$A" ]]; then edges+=("${A}>${B}"); return; fi
+    if [[ "$W" == "$B" ]]; then edges+=("${B}>${A}"); return; fi
+    edges+=(unknown)
+  }
+  build_edge _JAVA_OPTIONS JAVA_TOOL_OPTIONS "$w1"
+  build_edge _JAVA_OPTIONS JDK_JAVA_OPTIONS "$w2"
+  build_edge JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS "$w3"
 
-  if [[ "$w2" == "_JAVA_OPTIONS" ]]; then edges+=("_JAVA_OPTIONS>JDK_JAVA_OPTIONS")
-  elif [[ "$w2" == "JDK_JAVA_OPTIONS" ]]; then edges+=("JDK_JAVA_OPTIONS>_JAVA_OPTIONS")
-  else edges+=("unknown"); fi
-
-  if [[ "$w3" == "JAVA_TOOL_OPTIONS" ]]; then edges+=("JAVA_TOOL_OPTIONS>JDK_JAVA_OPTIONS")
-  elif [[ "$w3" == "JDK_JAVA_OPTIONS" ]]; then edges+=("JDK_JAVA_OPTIONS>JAVA_TOOL_OPTIONS")
-  else edges+=("unknown"); fi
-
-  order_raw="$(rank_three "${edges[@]}")"
+  order_raw="$(rank_general "${edges[@]}")"
   IFS=$'\n' read -r -d '' -a order_array < <(printf '%s\0' "$order_raw") || true
 
   local status="ok"; local sanity_value=""; local expected_top="${order_array[0]:-inconclusive}"; local mismatch=false
@@ -284,13 +299,15 @@ main() {
   if [[ "$order_raw" == "inconclusive" ]]; then status="inconclusive"; fi
 
   if $SANITY; then
-    out_all="$(env \
-      _JAVA_OPTIONS="-D${PROPERTY_KEY}=from-_JAVA_OPTIONS" \
-      JAVA_TOOL_OPTIONS="-D${PROPERTY_KEY}=from-JAVA_TOOL_OPTIONS" \
-      JDK_JAVA_OPTIONS="-D${PROPERTY_KEY}=from-JDK_JAVA_OPTIONS" \
-      "${RUN_CMD[@]}" 2>&1 || true)"
+    # Build environment for sanity only with supported vars
+    local env_cmd=(env)
+    local v
+    for v in "${SUPPORTED_VARS[@]}"; do
+      env_cmd+=("${v}=-D${PROPERTY_KEY}=from-${v}")
+    done
+    out_all="$("${env_cmd[@]}" "${RUN_CMD[@]}" 2>&1 || true)"
     sanity_value="$(printf '%s\n' "$out_all" | awk -F'=' -v k="${PROPERTY_KEY}" '$0 ~ "^"k"=" {print $2; exit}')"
-    if [[ -n $sanity_value && $expected_top != inconclusive ]]; then
+  if [[ -n $sanity_value && $expected_top != inconclusive && ${#SUPPORTED_VARS[@]} -ge 2 ]]; then
       case "$sanity_value" in
         from-${expected_top}) ;; # matches top predicted
         *) mismatch=true; status="mismatch" ;;
@@ -300,7 +317,18 @@ main() {
 
   if $OUTPUT_JSON; then
     # Build JSON manually (simple, controlled strings)
-    printf '{"property":"%s","pairwise":{' "$PROPERTY_KEY"
+    printf '{"property":"%s","supported":[' "$PROPERTY_KEY"
+    local i
+    for i in "${!SUPPORTED_VARS[@]}"; do
+      printf '"%s"' "${SUPPORTED_VARS[$i]}"
+      [[ $i -lt $((${#SUPPORTED_VARS[@]}-1)) ]] && printf ','
+    done
+    printf '],"unsupported":['
+    for i in "${!UNSUPPORTED_VARS[@]}"; do
+      printf '"%s"' "${UNSUPPORTED_VARS[$i]}"
+      [[ $i -lt $((${#UNSUPPORTED_VARS[@]}-1)) ]] && printf ','
+    done
+    printf '],"pairwise":{' 
     printf '"_JAVA_OPTIONS_vs_JAVA_TOOL_OPTIONS":"%s",' "$w1"
     printf '"_JAVA_OPTIONS_vs_JDK_JAVA_OPTIONS":"%s",' "$w2"
     printf '"JAVA_TOOL_OPTIONS_vs_JDK_JAVA_OPTIONS":"%s"},' "$w3"
@@ -308,7 +336,12 @@ main() {
     if [[ "$order_raw" == "inconclusive" ]]; then
       printf '"order":null,'
     else
-      printf '"order":["%s","%s","%s"],' "${order_array[0]}" "${order_array[1]}" "${order_array[2]}"
+      printf '"order":['
+      for i in "${!order_array[@]}"; do
+        printf '"%s"' "${order_array[$i]}"
+        [[ $i -lt $((${#order_array[@]}-1)) ]] && printf ','
+      done
+      printf '],'
     fi
     if $SANITY; then
       local sanitized_raw
@@ -322,31 +355,20 @@ main() {
     hr; say "Edges inferred:"; $QUIET || printf '%s\n' "${edges[@]}"
     hr; say "Final precedence order (highest first):"
     if [[ "$order_raw" == "inconclusive" ]]; then
-      say "${YELLOW}Inconclusive ordering (cycle or insufficient data).${RESET}"
+      say "${YELLOW}Inconclusive ordering (insufficient data, cycle, or limited support).${RESET}"
     else
-      printf '1) %s\n2) %s\n3) %s\n' "${order_array[0]}" "${order_array[1]}" "${order_array[2]}"
-      # Pretty precedence chain
-      local chain
-      chain="${order_array[0]} > ${order_array[1]} > ${order_array[2]}"
-      hr
-      say "${BOLD}Precedence chain:${RESET} ${GREEN}${chain}${RESET}"
-      say
-      say "Meaning: When the same -D${PROPERTY_KEY}=... is supplied via multiple env vars, the leftmost one above wins (overrides) the ones to its right."
-      say
-      # Pairwise table
+      local idx=1 chain=""; for v in "${order_array[@]}"; do printf '%d) %s\n' "$idx" "$v"; ((idx++)); done
+      if [[ ${#order_array[@]} -ge 2 ]]; then
+        chain="${order_array[0]}"
+        for ((i=1;i<${#order_array[@]};i++)); do chain+=" > ${order_array[$i]}"; done
+        hr; say "${BOLD}Precedence chain:${RESET} ${GREEN}${chain}${RESET}"; say
+        say "Meaning: When the same -D${PROPERTY_KEY}=... is supplied via multiple supported env vars, the leftmost one wins over those to its right."; say
+      fi
       printf '%s\n' "Pairwise outcomes:"; printf '%s\n' "---------------------------------------------"
       printf '%-38s %s\n' "_JAVA_OPTIONS vs JAVA_TOOL_OPTIONS" "$w1"
       printf '%-38s %s\n' "_JAVA_OPTIONS vs JDK_JAVA_OPTIONS" "$w2"
       printf '%-38s %s\n' "JAVA_TOOL_OPTIONS vs JDK_JAVA_OPTIONS" "$w3"
       printf '%s\n' "---------------------------------------------"
-      # Reasoning explanation
-      say
-      say "Explanation:" 
-      if [[ "$w1" == "_JAVA_OPTIONS" && "$w2" == "_JAVA_OPTIONS" && "$w3" == "JAVA_TOOL_OPTIONS" ]]; then
-        say "_JAVA_OPTIONS beats both others, so it is highest. JAVA_TOOL_OPTIONS beats JDK_JAVA_OPTIONS, so JAVA_TOOL_OPTIONS is second, leaving JDK_JAVA_OPTIONS third." 
-      else
-        say "Ranking derived by counting pairwise wins; each environment variable's position reflects how many other variables it overrode." 
-      fi
     fi
     if $SANITY; then
       hr; say "Sanity check with all three set:"; $QUIET || printf '%s\n' "$out_all"
