@@ -56,9 +56,19 @@ done
   echo
   # Collect union of variable names from JSON (though they are fixed) to be future-proof
   vars=($(jq -r '[.supported[], .unsupported[]] | unique[]' "${FILES[0]}") )
-  if [[ ${#vars[@]} -eq 0 ]]; then
-    vars=(_JAVA_OPTIONS JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS)
-  fi
+  # Enforce canonical column order regardless of JSON order
+  canonical=(_JAVA_OPTIONS JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS)
+  ordered=()
+  for c in "${canonical[@]}"; do
+    for v in "${vars[@]}"; do [[ $v == "$c" ]] && ordered+=("$v") || true; done
+  done
+  # If some unexpected vars appear, append them at end
+  for v in "${vars[@]}"; do
+    skip=false; for c in "${ordered[@]}"; do [[ $v == "$c" ]] && skip=true; done
+    $skip || ordered+=("$v")
+  done
+  vars=("${ordered[@]}")
+  if [[ ${#vars[@]} -eq 0 ]]; then vars=(_JAVA_OPTIONS JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS); fi
   # Header row
   header='| JDK |'
   for v in "${vars[@]}"; do header+=" ${v} |"; done
@@ -67,7 +77,6 @@ done
   {
     echo "$header"
     echo "$sep"
-    echo
   } >> "$OUTPUT"
   for f in "${FILES[@]}"; do
     jdk=$(echo "$f" | sed -E 's/.*jdk-([0-9]+)\/.*/\1/') || jdk=?
