@@ -7,6 +7,9 @@ on:
     branches: [ main ]
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 jobs:
   matrix-run:
     name: Run script (JDK ${{ matrix.java }})
@@ -102,5 +105,5 @@ jobs:
             :
           fi
           git add REPORT.md
-          git diff --cached --quiet || git commit -m "ci: update precedence REPORT.md"
+          git diff --cached --quiet || git commit -m "ci: update precedence REPORT.md [skip ci]"
           git push || echo "Non-fast-forward push skipped (likely PR context)"
