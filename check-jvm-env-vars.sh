@@ -67,6 +67,21 @@ log_note() { # route notes/warnings; if JSON mode keep stdout clean
   fi
 }
 
+# Escape a string for safe JSON embedding (basic subset: quotes, backslashes, control chars, newlines)
+escape_json() {
+  local s="$1"
+  s=${s//\/\\}       # backslash
+  s=${s//"/\"}       # quote
+  s=${s//$'\n'/\\n}  # newline
+  s=${s//$'\r'/\\r}  # carriage return
+  s=${s//$'\t'/\\t}  # tab
+  s=${s//$'\f'/\\f}  # formfeed
+  s=${s//$'\b'/\\b}  # backspace
+  # Remove ESC and other non-printable control chars (0x00-0x1F except handled ones) to keep JSON simple
+  s=$(printf '%s' "$s" | tr -d '\000-\010\013\014\016-\037')
+  printf '%s' "$s"
+}
+
 usage() {
   cat <<EOF
 ${SCRIPT_NAME} - Determine precedence among JVM option env vars
@@ -296,8 +311,9 @@ main() {
       printf '"order":["%s","%s","%s"],' "${order_array[0]}" "${order_array[1]}" "${order_array[2]}"
     fi
     if $SANITY; then
-      # Escape embedded double quotes in raw output for JSON safety
-      printf '"sanity":{"raw":"%s","value":"%s"},' "${out_all//\"/\\\"}" "$sanity_value"
+      local sanitized_raw
+      sanitized_raw=$(escape_json "$out_all")
+      printf '"sanity":{"raw":"%s","value":"%s"},' "$sanitized_raw" "$sanity_value"
     else
       printf '"sanity":null,'
     fi
