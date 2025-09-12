@@ -1,6 +1,6 @@
 # JVM Option Env Var Precedence Report
 
-Generated: 2025-09-12 19:14 UTC
+Generated: 2025-09-12 19:17 UTC
 
 This report aggregates precedence detection across multiple JDK versions.
 
@@ -17,13 +17,12 @@ This report aggregates precedence detection across multiple JDK versions.
 
 Legend: ✅ supported, ❌ unsupported
 
-| JDK | JAVA_TOOL_OPTIONS | JDK_JAVA_OPTIONS | _JAVA_OPTIONS |
+| JDK | _JAVA_OPTIONS | JAVA_TOOL_OPTIONS | JDK_JAVA_OPTIONS |
 |-----|---|---|---|
-
 | 11 | ✅ | ✅ | ✅ |
 | 17 | ✅ | ✅ | ✅ |
 | 21 | ✅ | ✅ | ✅ |
-| 8 | ✅ | ❌ | ✅ |
+| 8 | ✅ | ✅ | ❌ |
 
 ## Detailed Per-JDK Results
 
